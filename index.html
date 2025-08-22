@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pet Activity Tracker – Micro App</title>
+  <!-- Tailwind via CDN for quick delivery (no build step) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js for tiny data‑viz (doughnut + bar) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    /* Subtle scrollbar for chat */
+    .thin-scrollbar { scrollbar-width: thin; }
+  </style>
+  <!-- README (≤200 words)
+  Stack: Single-file HTML + Tailwind (CDN) + Chart.js. No backend; data persists in localStorage.
+  Run: Open index.html in any modern browser. Everything runs client-side.
+  Trade-offs: Chose CDN for speed and zero setup. AI chatbot is on-device, rule-based (no external API) but remembers chat context & activities. For production, split modules, add tests, and replace the bot with an API or WASM LLM. -->
+</head>
+<body class="bg-slate-50 text-slate-800">
+  <!-- Top reminder banner (hidden by default) -->
+  <div id="reminderBanner" class="hidden bg-amber-100 border border-amber-300 text-amber-900 px-4 py-3 text-sm"></div>
+
+  <main class="max-w-6xl mx-auto p-4 md:p-6">
+    <header class="mb-6">
+      <h1 class="text-2xl md:text-3xl font-bold tracking-tight">🐾 Pet Activity Tracker</h1>
+      <p class="text-sm text-slate-600">Log walks, meals, meds • See today’s summary • Chat with a contextual bot • Smart reminder at 18:00</p>
+    </header>
+
+    <!-- Grid layout: form + summary + chat -->
+    <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <!-- Logger -->
+      <div class="lg:col-span-1 bg-white rounded-2xl shadow p-4 md:p-5">
+        <h2 class="font-semibold text-lg mb-3">1) Log an activity</h2>
+        <form id="activityForm" class="space-y-3">
+          <div>
+            <label class="block text-sm font-medium">Pet name</label>
+            <input id="petName" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="e.g., Rex" required />
+          </div>
+          <div>
+            <label class="block text-sm font-medium">Activity type</label>
+            <select id="activityType" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="walk">Walk</option>
+              <option value="meal">Meal</option>
+              <option value="medication">Medication</option>
+            </select>
+          </div>
+          <div id="quantityWrap">
+            <label id="quantityLabel" class="block text-sm font-medium">Duration (minutes)</label>
+            <input id="quantity" type="number" min="1" step="1" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="e.g., 30" required />
+          </div>
+          <div>
+            <label class="block text-sm font-medium">Date & time</label>
+            <input id="when" type="datetime-local" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+          <div class="flex items-center gap-2 pt-2">
+            <button class="rounded-xl bg-indigo-600 text-white px-4 py-2 font-medium hover:bg-indigo-700 active:scale-[.99]">Add</button>
+            <button id="clearAll" type="button" class="rounded-xl border border-slate-300 px-3 py-2 text-slate-700 hover:bg-slate-50">Clear all data</button>
+          </div>
+          <p id="formMsg" class="text-sm text-rose-600"></p>
+        </form>
+        <hr class="my-4"/>
+        <h3 class="font-semibold">Recent entries</h3>
+        <ul id="recentList" class="mt-2 space-y-2 max-h-48 overflow-auto thin-scrollbar pr-1"></ul>
+      </div>
+
+      <!-- Summary -->
+      <div class="lg:col-span-1 bg-white rounded-2xl shadow p-4 md:p-5">
+        <h2 class="font-semibold text-lg mb-3">2) Today’s summary</h2>
+        <div id="summaryEmpty" class="text-slate-500 text-sm hidden">No activities yet today.</div>
+        <div class="grid grid-cols-3 gap-3">
+          <div class="rounded-xl border border-slate-200 p-3">
+            <div class="text-xs text-slate-500">Walk time</div>
+            <div id="sumWalk" class="text-xl font-semibold">0 min</div>
+          </div>
+          <div class="rounded-xl border border-slate-200 p-3">
+            <div class="text-xs text-slate-500">Meals</div>
+            <div id="sumMeals" class="text-xl font-semibold">0</div>
+          </div>
+          <div class="rounded-xl border border-slate-200 p-3">
+            <div class="text-xs text-slate-500">Meds</div>
+            <div id="sumMeds" class="text-xl font-semibold">0</div>
+          </div>
+        </div>
+        <div class="mt-4 grid grid-cols-1 gap-4">
+          <canvas id="vizRing" height="180"></canvas>
+          <canvas id="vizBar" height="200"></canvas>
+        </div>
+      </div>
+
+      <!-- Chatbot -->
+      <div class="lg:col-span-1 bg-white rounded-2xl shadow p-4 md:p-5">
+        <h2 class="font-semibold text-lg mb-3">3) AI Chatbot (contextual memory)</h2>
+        <div id="chatBox" class="h-72 border border-slate-200 rounded-xl p-3 overflow-auto thin-scrollbar bg-slate-50"></div>
+        <form id="chatForm" class="mt-3 flex gap-2">
+          <input id="chatInput" class="flex-1 rounded-xl border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="Ask about Rex’s day, last meal, etc." />
+          <button class="rounded-xl bg-indigo-600 text-white px-4 py-2 font-medium hover:bg-indigo-700">Send</button>
+          <button id="clearChat" type="button" class="rounded-xl border border-slate-300 px-3 py-2 text-slate-700 hover:bg-slate-50">Clear memory</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // ---------- Storage & State ----------
+    const LS_KEY = 'pet_activities_v1';
+    const CHAT_KEY = 'pet_chat_memory_v1';
+    const PROFILE_KEY = 'pet_profiles_v1'; // simple key-value pet -> notes
+
+    const load = (k, fallback) => { try { return JSON.parse(localStorage.getItem(k)) ?? fallback; } catch { return fallback; } };
+    const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+
+    let activities = load(LS_KEY, []);
+    let chatMemory = load(CHAT_KEY, []);
+    let profiles = load(PROFILE_KEY, {});
+
+    // ---------- Helpers ----------
+    const nowLocalISO = () => {
+      const d = new Date();
+      d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+      return d.toISOString().slice(0,16); // yyyy-MM-ddTHH:mm
+    };
+    const fmtTime = (d) => new Date(d).toLocaleString();
+    const isToday = (d) => {
+      const x = new Date(d), t = new Date();
+      return x.getFullYear()===t.getFullYear() && x.getMonth()===t.getMonth() && x.getDate()===t.getDate();
+    };
+
+    // ---------- UI Elements ----------
+    const form = document.getElementById('activityForm');
+    const petName = document.getElementById('petName');
+    const activityType = document.getElementById('activityType');
+    const quantity = document.getElementById('quantity');
+    const quantityLabel = document.getElementById('quantityLabel');
+    const when = document.getElementById('when');
+    const formMsg = document.getElementById('formMsg');
+    const recentList = document.getElementById('recentList');
+    const clearAllBtn = document.getElementById('clearAll');
+
+    const sumWalk = document.getElementById('sumWalk');
+    const sumMeals = document.getElementById('sumMeals');
+    const sumMeds = document.getElementById('sumMeds');
+    const summaryEmpty = document.getElementById('summaryEmpty');
+
+    const banner = document.getElementById('reminderBanner');
+
+    // Chat
+    const chatBox = document.getElementById('chatBox');
+    const chatForm = document.getElementById('chatForm');
+    const chatInput = document.getElementById('chatInput');
+    const clearChat = document.getElementById('clearChat');
+
+    // Defaults
+    when.value = nowLocalISO();
+
+    // Adjust quantity label by type
+    const setQuantityLabel = () => {
+      const t = activityType.value;
+      if (t === 'walk') { quantityLabel.textContent = 'Duration (minutes)'; quantity.placeholder = 'e.g., 30'; quantity.min = 1; }
+      if (t === 'meal') { quantityLabel.textContent = 'Quantity (cups/grams)'; quantity.placeholder = 'e.g., 1'; quantity.min = 0.1; }
+      if (t === 'medication') { quantityLabel.textContent = 'Dose (mg or tablets)'; quantity.placeholder = 'e.g., 1'; quantity.min = 0.1; }
+    };
+    activityType.addEventListener('change', setQuantityLabel);
+    setQuantityLabel();
+
+    // ---------- Rendering ----------
+    function renderRecent() {
+      recentList.innerHTML = '';
+      const latest = [...activities].slice(-8).reverse();
+      if (!latest.length) {
+        recentList.innerHTML = '<li class="text-sm text-slate-500">Nothing logged yet.</li>';
+        return;
+      }
+      latest.forEach(a => {
+        const li = document.createElement('li');
+        li.className = 'border border-slate-200 rounded-xl p-2 text-sm flex items-start justify-between gap-2';
+        li.innerHTML = `<div>
+          <div><span class="font-medium">${a.pet}</span> • ${a.type} • ${a.quantity}${a.type==='walk'?' min':''}</div>
+          <div class="text-slate-500 text-xs">${fmtTime(a.when)}</div>
+        </div>
+        <button class="text-rose-600 hover:underline text-xs">Delete</button>`;
+        li.querySelector('button').addEventListener('click', () => {
+          activities = activities.filter(x => x.id !== a.id);
+          save(LS_KEY, activities);
+          renderAll();
+        });
+        recentList.appendChild(li);
+      });
+    }
+
+    function getTodaySummary() {
+      const today = activities.filter(a => isToday(a.when));
+      const totalWalk = today.filter(a => a.type==='walk').reduce((s,a) => s + Number(a.quantity||0), 0);
+      const meals = today.filter(a => a.type==='meal').length;
+      const meds = today.filter(a => a.type==='medication').length;
+      return { totalWalk, meals, meds };
+    }
+
+    let ringChart, barChart;
+    function renderSummary() {
+      const { totalWalk, meals, meds } = getTodaySummary();
+      sumWalk.textContent = `${totalWalk} min`;
+      sumMeals.textContent = meals;
+      sumMeds.textContent = meds;
+
+      const has = totalWalk || meals || meds;
+      summaryEmpty.classList.toggle('hidden', !!has);
+
+      // Doughnut (goal tracking)
+      const walkGoal = 60, mealGoal = 2, medGoal = 1;
+      const vals = [Math.min(totalWalk, walkGoal), Math.min(meals, mealGoal), Math.min(meds, medGoal)];
+      const remain = [Math.max(walkGoal - vals[0], 0), Math.max(mealGoal - vals[1], 0), Math.max(medGoal - vals[2], 0)];
+
+      const ringCtx = document.getElementById('vizRing');
+      if (ringChart) ringChart.destroy();
+      ringChart = new Chart(ringCtx, {
+        type: 'doughnut',
+        data: { labels: ['Walk','Meals','Meds'], datasets: [{ data: vals, backgroundColor: undefined }, { data: remain, backgroundColor: undefined }]},
+        options: { plugins: { legend: { position: 'bottom' }, tooltip: { enabled: true } }, cutout: '60%'}
+      });
+
+      const barCtx = document.getElementById('vizBar');
+      if (barChart) barChart.destroy();
+      barChart = new Chart(barCtx, {
+        type: 'bar',
+        data: { labels: ['Walk (min)','Meals','Meds'], datasets: [{ label: 'Today', data: [totalWalk, meals, meds], backgroundColor: undefined }]},
+        options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+      });
+    }
+
+    function renderBanner() {
+      // 4) UX prompt if no walk by 18:00 local time
+      const now = new Date();
+      const cutoff = new Date(); cutoff.setHours(18,0,0,0);
+      const petsToday = new Set(activities.filter(a => isToday(a.when)).map(a => a.pet));
+      const walkers = new Set(activities.filter(a => isToday(a.when) && a.type==='walk').map(a => a.pet));
+      const pending = [...petsToday].filter(p => !walkers.has(p));
+      if (now >= cutoff && pending.length) {
+        banner.textContent = `${pending.join(', ')} ${pending.length>1?'still need exercise today!':'still needs exercise today!'}`;
+        banner.classList.remove('hidden');
+      } else {
+        banner.classList.add('hidden');
+        banner.textContent = '';
+      }
+    }
+
+    function renderAll(){
+      renderRecent();
+      renderSummary();
+      renderBanner();
+    }
+
+    // ---------- Form submit ----------
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      formMsg.textContent = '';
+      const pet = petName.value.trim();
+      const type = activityType.value;
+      const qty = Number(quantity.value);
+      const ts = new Date(when.value || Date.now());
+      const now = new Date();
+
+      if (!pet) { formMsg.textContent = 'Please enter a pet name.'; return; }
+      if (!when.value) { formMsg.textContent = 'Please select a date/time.'; return; }
+      if (isNaN(qty) || qty <= 0) { formMsg.textContent = 'Please enter a positive number.'; return; }
+      if (ts > now) { formMsg.textContent = 'Future date/time not allowed.'; return; }
+
+      const entry = { id: crypto.randomUUID(), pet, type, quantity: qty, when: ts.toISOString() };
+      activities.push(entry);
+      save(LS_KEY, activities);
+
+      // seed profile map
+      if (!profiles[pet]) { profiles[pet] = ''; save(PROFILE_KEY, profiles); }
+
+      // prime chat memory with a short notice
+      chatSay('assistant', `Logged ${type} for ${pet}.`);
+
+      // reset
+      quantity.value = '';
+      when.value = nowLocalISO();
+      renderAll();
+    });
+
+    clearAllBtn.addEventListener('click', () => {
+      if (confirm('Delete ALL saved activities?')) {
+        activities = [];
+        save(LS_KEY, activities);
+        renderAll();
+      }
+    });
+
+    // ---------- Chatbot (rule-based with memory) ----------
+    function chatSay(role, text){
+      chatMemory.push({ role, text, t: Date.now() });
+      save(CHAT_KEY, chatMemory);
+      const bubble = document.createElement('div');
+      bubble.className = role==='user' ? 'mb-2 flex justify-end' : 'mb-2 flex justify-start';
+      bubble.innerHTML = `<div class="max-w-[85%] rounded-xl ${role==='user'?'bg-indigo-600 text-white':'bg-white border border-slate-200'} px-3 py-2 text-sm">${text}</div>`;
+      chatBox.appendChild(bubble);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function lastActivity(pet, type){
+      const list = activities.filter(a => (!pet || a.pet.toLowerCase()===pet.toLowerCase()) && (!type || a.type===type)).sort((a,b)=> new Date(b.when)-new Date(a.when));
+      return list[0];
+    }
+    function todayTotals(pet){
+      const t = activities.filter(a => isToday(a.when) && (!pet || a.pet.toLowerCase()===pet.toLowerCase()));
+      return {
+        walk: t.filter(a=>a.type==='walk').reduce((s,a)=>s+Number(a.quantity||0),0),
+        meals: t.filter(a=>a.type==='meal').length,
+        meds: t.filter(a=>a.type==='medication').length,
+      };
+    }
+
+    function inferPetFromContext(){
+      // last mentioned pet in chat, else most recent in activities
+      for (let i = chatMemory.length-1; i>=0; i--) {
+        const m = chatMemory[i].text.match(/\b([A-Z][a-zA-Z]{1,20})\b/);
+        if (m && profiles[m[1]]!==undefined) return m[1];
+      }
+      const last = [...activities].reverse().find(a=>a.pet);
+      return last ? last.pet : null;
+    }
+
+    function handleProfileStatements(text){
+      // very light pattern: "Rex is a labrador", "Milo is 2 years old"
+      const m = text.match(/^(\w{2,})\s+is\s+(.{2,})$/i);
+      if (m) {
+        const pet = m[1];
+        const note = m[2];
+        profiles[pet] = (profiles[pet]||'');
+        profiles[pet] += (profiles[pet]?' ':'') + note;
+        save(PROFILE_KEY, profiles);
+        return `Noted! ${pet} is ${note}.`;
+      }
+      return null;
+    }
+
+    function botReply(text){
+      const lower = text.toLowerCase();
+      const petMatch = text.match(/for\s+(\w{2,})|about\s+(\w{2,})|\b(\w{2,})\b(?=\s+today)/i);
+      let pet = petMatch ? (petMatch[1]||petMatch[2]||petMatch[3]) : null;
+      if (!pet) pet = inferPetFromContext();
+
+      // profile capture
+      const prof = handleProfileStatements(text);
+      if (prof) return prof;
+
+      if (/what\s+has\s+.*today\??|summary|how\s+much\s+walk/i.test(lower)){
+        const t = todayTotals(pet);
+        if (!pet) return `Today you’ve logged: ${t.walk} min walk, ${t.meals} meals, ${t.meds} meds.`;
+        return `${pet}: ${t.walk} min walk, ${t.meals} meals, ${t.meds} meds today.`;
+      }
+      if (/last\s+(meal|walk|med(ication)?)/i.test(lower)){
+        const type = /meal/.test(lower)?'meal':(/walk/.test(lower)?'walk':'medication');
+        const last = lastActivity(pet, type);
+        if (!last) return pet?`No ${type} logged for ${pet} yet.`:`No ${type} logged yet.`;
+        const q = type==='walk'?`${last.quantity} min`:(type==='meal'?`${last.quantity}`:`${last.quantity}`);
+        return `${pet||last.pet} last ${type}: ${q} at ${new Date(last.when).toLocaleString()}.`;
+      }
+      if (/who\s+still\s+needs\s+exercise|needs\s+exercise/i.test(lower)){
+        const petsToday = new Set(activities.filter(a => isToday(a.when)).map(a => a.pet));
+        const walkers = new Set(activities.filter(a => isToday(a.when) && a.type==='walk').map(a => a.pet));
+        const pending = [...petsToday].filter(p => !walkers.has(p));
+        return pending.length ? `${pending.join(', ')} still need exercise today.` : 'All pets have had a walk logged today. Nice!';
+      }
+      if (/clear\s+(chat|memory)/i.test(lower)){
+        chatMemory = [];
+        save(CHAT_KEY, chatMemory);
+        return 'Cleared chat memory.';
+      }
+
+      // fallback: echo with context
+      const profileLine = pet && profiles[pet] ? ` I remember ${pet} is ${profiles[pet]}.` : '';
+      return `Got it. Ask me about last walk, meals, meds, or say "<Pet> is ..." to add profile notes.${profileLine}`;
+    }
+
+    chatForm.addEventListener('submit', (e)=>{
+      e.preventDefault();
+      const text = chatInput.value.trim();
+      if (!text) return;
+      chatInput.value='';
+      chatSay('user', text);
+      const reply = botReply(text);
+      chatSay('assistant', reply);
+    });
+
+    clearChat.addEventListener('click', ()=>{
+      if (confirm('Clear chat memory?')){
+        chatMemory = [];
+        save(CHAT_KEY, chatMemory);
+        chatBox.innerHTML='';
+      }
+    });
+
+    // ---------- Init ----------
+    function boot(){
+      // seed profiles for known pets (from activity list)
+      activities.forEach(a => { if (profiles[a.pet]===undefined) profiles[a.pet]=''; });
+      save(PROFILE_KEY, profiles);
+      renderAll();
+      // check reminder every minute
+      setInterval(renderBanner, 60*1000);
+      // Replay chat
+      chatBox.innerHTML='';
+      chatMemory.forEach(m=> chatSay(m.role, m.text));
+    }
+    boot();
+  </script>
+</body>
+</html>
